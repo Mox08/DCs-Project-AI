@@ -869,41 +869,28 @@ app.use(
    START SERVER
    ========================================================= */
 
-app.listen(
-    PORT,
-    "0.0.0.0",
+// ==================================================
+// START SERVER
+// ==================================================
 
-    () => {
+if (require.main === module) {
+    app.listen(
+        PORT,
+        "0.0.0.0",
+        () => {
+            console.log("");
+            console.log("================================");
+            console.log("DC'S PROJECT AI SERVER");
+            console.log("================================");
+            console.log(
+                `Server running at http://localhost:${PORT}`
+            );
+            console.log("Image analyzer: READY");
+            console.log("AI chat: READY");
+            console.log("================================");
+            console.log("");
+        }
+    );
+}
 
-        console.log("");
-        console.log(
-            "================================"
-        );
-
-        console.log(
-            "DC'S PROJECT AI SERVER"
-        );
-
-        console.log(
-            "================================"
-        );
-
-        console.log(
-            `Server running at http://localhost:${PORT}`
-        );
-
-        console.log(
-            "Image analyzer: READY"
-        );
-
-        console.log(
-            "AI chat: READY"
-        );
-
-        console.log(
-            "================================"
-        );
-
-        console.log("");
-    }
-);
+module.exports = app;
