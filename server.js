@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -8,164 +9,367 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 
 /* =========================================================
-   SERVER SETTINGS
+   SERVER
    ========================================================= */
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
 /*
-   Your website files are inside:
-
+   Website files:
    DCs-Project-AI
       └── public
-           ├── index.html
-           ├── ...
+           └── index.html
 */
-app.use(express.static("public"));
+
+app.use(express.static(path.join(__dirname, "public")));
 
 /* =========================================================
-   GEMINI
+   GEMINI CONFIG
    ========================================================= */
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const API_KEY =
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    "";
 
-if (!GEMINI_API_KEY) {
-    console.log("");
-    console.log("WARNING:");
-    console.log("GEMINI_API_KEY was not found in .env");
-    console.log("");
+const GEMINI_MODEL =
+    process.env.GEMINI_MODEL ||
+    "gemini-3.7-flash";
+
+if (!API_KEY) {
+    console.error("");
+    console.error(
+        "GEMINI API KEY MISSING"
+    );
+    console.error(
+        "Set GEMINI_API_KEY in .env locally or in Vercel Environment Variables."
+    );
+    console.error("");
 }
 
-const ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY
-});
-
-const GEMINI_MODEL = "gemini-3.6-flash";
+const ai = API_KEY
+    ? new GoogleGenAI({
+        apiKey: API_KEY
+      })
+    : null;
 
 /* =========================================================
-   BASIC GEMINI FUNCTION
+   GEMINI ERROR HANDLER
    ========================================================= */
 
-async function askGemini(contents, config = {}) {
+function friendlyGeminiError(error) {
 
-    const response = await ai.models.generateContent({
+    const raw = String(
+        error?.message ||
+        error?.error?.message ||
+        error ||
+        "Unknown Gemini error."
+    );
+
+    if (
+        /api key/i.test(raw) ||
+        /api_key/i.test(raw) ||
+        /authentication/i.test(raw) ||
+        /unauthenticated/i.test(raw) ||
+        /invalid.*key/i.test(raw) ||
+        /permission denied/i.test(raw)
+    ) {
+        return (
+            "Gemini API key is missing, invalid, blocked, " +
+            "or unavailable to this deployment. " +
+            "Check GEMINI_API_KEY / GOOGLE_API_KEY " +
+            "in Vercel Environment Variables, then redeploy."
+        );
+    }
+
+    if (
+        /not found/i.test(raw) ||
+        /404/i.test(raw) ||
+        /no longer available/i.test(raw)
+    ) {
+        return (
+            `Gemini model "${GEMINI_MODEL}" was rejected. ` +
+            "Set GEMINI_MODEL to a model available to your API key."
+        );
+    }
+
+    if (
+        /quota/i.test(raw) ||
+        /rate limit/i.test(raw) ||
+        /resource exhausted/i.test(raw) ||
+        /429/i.test(raw)
+    ) {
+        return (
+            "Gemini API quota or rate limit was reached. " +
+            "Check your Gemini API usage and limits."
+        );
+    }
+
+    return raw;
+}
+
+/* =========================================================
+   GEMINI REQUEST
+   ========================================================= */
+
+async function askGemini(
+    contents,
+    config = {}
+) {
+
+    if (!ai) {
+        throw new Error(
+            "Gemini API key is not configured."
+        );
+    }
+
+    return ai.models.generateContent({
+
         model: GEMINI_MODEL,
-        contents: contents,
-        config: config
-    });
 
-    return response;
+        contents: contents,
+
+        config: config
+
+    });
 }
+
+/* =========================================================
+   HEALTH CHECK
+   ========================================================= */
+
+app.get(
+    "/api/health",
+    (req, res) => {
+
+        res.json({
+
+            ok: true,
+
+            server:
+                "DC'S PROJECT AI",
+
+            geminiConfigured:
+                Boolean(API_KEY),
+
+            model:
+                GEMINI_MODEL,
+
+            environment:
+                process.env.VERCEL
+                    ? "vercel"
+                    : "local"
+
+        });
+    }
+);
+
+/* =========================================================
+   GEMINI TEST
+   ========================================================= */
+
+app.get(
+    "/api/gemini-test",
+    async (req, res) => {
+
+        try {
+
+            const response =
+                await askGemini(
+                    "Reply with exactly: GEMINI_OK",
+
+                    {
+                        temperature: 0
+                    }
+                );
+
+            res.json({
+
+                ok: true,
+
+                reply:
+                    response.text || "",
+
+                model:
+                    GEMINI_MODEL
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "GEMINI TEST ERROR:"
+            );
+
+            console.error(error);
+
+            res.status(500).json({
+
+                ok: false,
+
+                error:
+                    friendlyGeminiError(
+                        error
+                    ),
+
+                model:
+                    GEMINI_MODEL
+
+            });
+        }
+    }
+);
 
 /* =========================================================
    NORMAL AI CHAT
    ========================================================= */
 
-app.post("/api/chat", async (req, res) => {
+app.post(
+    "/api/chat",
+    async (req, res) => {
 
-    try {
+        try {
 
-        const message = String(
-            req.body?.message || ""
-        ).trim();
+            const message =
+                String(
+                    req.body?.message || ""
+                ).trim();
 
-        if (!message) {
+            if (!message) {
 
-            return res.status(400).json({
-                error: "Please enter a message."
+                return res.status(400).json({
+
+                    ok: false,
+
+                    error:
+                        "Please enter a message."
+                });
+            }
+
+            console.log(
+                "AI chat request received."
+            );
+
+            const response =
+                await askGemini(
+                    message
+                );
+
+            return res.json({
+
+                ok: true,
+
+                reply:
+                    response.text || ""
+
+            });
+
+        } catch (error) {
+
+            console.error("");
+            console.error(
+                "=============================="
+            );
+            console.error(
+                "CHAT ERROR"
+            );
+            console.error(
+                "=============================="
+            );
+            console.error(error);
+
+            return res.status(500).json({
+
+                ok: false,
+
+                error:
+                    friendlyGeminiError(
+                        error
+                    ),
+
+                model:
+                    GEMINI_MODEL
+
             });
         }
-
-        console.log("AI chat request received.");
-
-        const response = await askGemini(message);
-
-        res.json({
-            reply: response.text || ""
-        });
-
-    } catch (error) {
-
-        console.error("");
-        console.error("CHAT ERROR:");
-        console.error(error);
-        console.error("");
-
-        res.status(500).json({
-            error:
-                error?.message ||
-                "AI chat failed."
-        });
     }
-});
+);
 
 /* =========================================================
    IMAGE UPLOAD
    ========================================================= */
 
-const upload = multer({
+const upload =
+    multer({
 
-    storage: multer.memoryStorage(),
+        storage:
+            multer.memoryStorage(),
 
-    limits: {
-        fileSize: 12 * 1024 * 1024
-    },
+        limits: {
 
-    fileFilter: (req, file, callback) => {
+            fileSize:
+                4 * 1024 * 1024
 
-        if (
-            file.mimetype &&
-            file.mimetype.startsWith("image/")
-        ) {
+        },
 
-            callback(null, true);
+        fileFilter:
+            (req, file, callback) => {
 
-        } else {
+                if (
+                    file.mimetype &&
+                    file.mimetype.startsWith(
+                        "image/"
+                    )
+                ) {
 
-            callback(
-                new Error(
-                    "Only image files are allowed."
-                )
-            );
-        }
-    }
-});
+                    callback(
+                        null,
+                        true
+                    );
+
+                } else {
+
+                    callback(
+                        new Error(
+                            "Only image files are allowed."
+                        )
+                    );
+                }
+            }
+
+    });
 
 /* =========================================================
-   REMOVE MARKDOWN FROM GEMINI JSON
+   CLEAN GEMINI JSON
    ========================================================= */
 
 function cleanGeminiJSON(text) {
 
-    let result = String(text || "").trim();
+    let result =
+        String(
+            text || ""
+        ).trim();
 
-    /*
-       Sometimes Gemini returns:
+    result =
+        result.replace(
+            /^```json\s*/i,
+            ""
+        );
 
-       ```json
-       {...}
-       ```
+    result =
+        result.replace(
+            /^```\s*/i,
+            ""
+        );
 
-       Remove those fences.
-    */
-
-    result = result.replace(
-        /^```json\s*/i,
-        ""
-    );
-
-    result = result.replace(
-        /^```\s*/i,
-        ""
-    );
-
-    result = result.replace(
-        /\s*```$/i,
-        ""
-    );
+    result =
+        result.replace(
+            /\s*```$/i,
+            ""
+        );
 
     return result.trim();
 }
@@ -176,18 +380,18 @@ function cleanGeminiJSON(text) {
 
 function parseGeminiJSON(text) {
 
-    const cleaned = cleanGeminiJSON(text);
+    const cleaned =
+        cleanGeminiJSON(
+            text
+        );
 
     try {
 
-        return JSON.parse(cleaned);
+        return JSON.parse(
+            cleaned
+        );
 
     } catch (firstError) {
-
-        /*
-           If Gemini added text before/after JSON,
-           try extracting the JSON object.
-        */
 
         const firstBrace =
             cleaned.indexOf("{");
@@ -200,13 +404,12 @@ function parseGeminiJSON(text) {
             lastBrace > firstBrace
         ) {
 
-            const jsonPart =
-                cleaned.substring(
+            return JSON.parse(
+                cleaned.slice(
                     firstBrace,
                     lastBrace + 1
-                );
-
-            return JSON.parse(jsonPart);
+                )
+            );
         }
 
         throw firstError;
@@ -226,89 +429,123 @@ function validateAnalysis(data) {
         );
     }
 
-    if (!Array.isArray(data.variables)) {
+    if (
+        !Array.isArray(
+            data.variables
+        )
+    ) {
 
         data.variables = [];
     }
 
     data.variables =
         data.variables
-            .map(v => String(v).trim())
+            .map(
+                v =>
+                    String(v).trim()
+            )
             .filter(Boolean);
 
     if (
-        data.type !== "truth_table" &&
-        data.type !== "logic_diagram"
+        data.type !==
+            "truth_table" &&
+        data.type !==
+            "logic_diagram"
     ) {
 
-        data.type = "truth_table";
+        data.type =
+            "truth_table";
     }
 
-    if (!Array.isArray(data.outputs)) {
+    if (
+        !Array.isArray(
+            data.outputs
+        )
+    ) {
 
         data.outputs = [];
     }
 
-    if (!Array.isArray(data.rows)) {
+    if (
+        !Array.isArray(
+            data.rows
+        )
+    ) {
 
         data.rows = [];
     }
 
-    /*
-       Normalize truth-table rows.
-    */
+    data.rows =
+        data.rows.map(
+            (row, index) => ({
 
-    data.rows = data.rows.map((row, index) => {
+                index:
+                    Number.isInteger(
+                        row.index
+                    )
+                        ? row.index
+                        : index,
 
-        let inputs = [];
+                inputs:
+                    Array.isArray(
+                        row.inputs
+                    )
+                        ? row.inputs.map(
+                            Number
+                        )
+                        : [],
 
-        if (Array.isArray(row.inputs)) {
+                output:
+                    Number(
+                        row.output
+                    ) === 1
+                        ? 1
+                        : 0
 
-            inputs = row.inputs.map(
-                value => Number(value)
-            );
-        }
+            })
+        );
 
-        let output =
-            Number(row.output);
-
-        if (
-            output !== 0 &&
-            output !== 1
-        ) {
-
-            output = 0;
-        }
-
-        return {
-
-            index:
-                Number.isInteger(row.index)
-                    ? row.index
-                    : index,
-
-            inputs: inputs,
-
-            output: output
-        };
-    });
-
-    if (!Array.isArray(data.gates)) {
+    if (
+        !Array.isArray(
+            data.gates
+        )
+    ) {
 
         data.gates = [];
     }
 
-    if (!Array.isArray(data.intermediateSignals)) {
+    if (
+        !Array.isArray(
+            data.connections
+        )
+    ) {
+
+        data.connections = [];
+    }
+
+    if (
+        !Array.isArray(
+            data.intermediateSignals
+        )
+    ) {
 
         data.intermediateSignals = [];
     }
 
-    if (!Array.isArray(data.minterms)) {
+    if (
+        !Array.isArray(
+            data.minterms
+        )
+    ) {
 
         data.minterms = [];
     }
 
-    if (!Array.isArray(data.maxterms)) {
+    if (
+        !Array.isArray(
+            data.maxterms
+        )
+    ) {
 
         data.maxterms = [];
     }
@@ -317,7 +554,7 @@ function validateAnalysis(data) {
 }
 
 /* =========================================================
-   DIGITAL ELECTRONICS IMAGE PROMPT
+   IMAGE ANALYSIS PROMPT
    ========================================================= */
 
 const IMAGE_ANALYSIS_PROMPT = `
@@ -344,8 +581,8 @@ If the image contains a truth table:
 - Identify every input variable.
 - Identify every output variable.
 - Read every visible row.
-- Preserve the order of the input variables.
-- Preserve the order of the rows.
+- Preserve the order of input variables.
+- Preserve the order of rows.
 - Extract 0 and 1 values.
 - Determine the Boolean function.
 - Determine minterms.
@@ -353,9 +590,7 @@ If the image contains a truth table:
 
 For a truth table:
 
-type must be:
-
-"truth_table"
+"type": "truth_table"
 
 =========================================================
 LOGIC CIRCUIT
@@ -391,10 +626,51 @@ Pay special attention to:
 Determine the Boolean expression for every output.
 
 =========================================================
-BOOLEAN NOTATION
+WIRE CONNECTION ANALYSIS
 =========================================================
 
-Use:
+When analyzing a logic-gate diagram:
+
+DO NOT only list the gates.
+
+Reconstruct the actual topology.
+
+For every gate determine:
+
+- Which signal enters input 1.
+- Which signal enters input 2.
+- Which signal is produced by the gate.
+- Which later gate receives that signal.
+- Whether crossing wires actually connect.
+- Whether a junction/dot indicates a connection.
+
+Return an explicit "connections" array.
+
+Example:
+
+"connections": [
+    {
+        "from": "A",
+        "to": "G1.input1",
+        "signal": "A"
+    },
+    {
+        "from": "B",
+        "to": "G1.input2",
+        "signal": "B"
+    },
+    {
+        "from": "G1.output",
+        "to": "G2.input1",
+        "signal": "N1"
+    }
+]
+
+Do not invent wire connections.
+
+=========================================================
+BOOLEAN NOTATION
+=========================================================
 
 NOT:
 
@@ -424,8 +700,6 @@ XNOR:
 
 AB + A'B'
 
-Parentheses are allowed.
-
 =========================================================
 OUTPUT FORMAT
 =========================================================
@@ -434,11 +708,7 @@ Return ONLY valid JSON.
 
 Do NOT use Markdown.
 
-Do NOT use:
-
-\`\`\`json
-
-Do NOT write an explanation outside the JSON.
+Do NOT use code fences.
 
 Use this exact structure:
 
@@ -481,6 +751,8 @@ Use this exact structure:
 
     "gates": [],
 
+    "connections": [],
+
     "explanation": "Short explanation.",
 
     "confidence": "high",
@@ -489,16 +761,14 @@ Use this exact structure:
 }
 
 =========================================================
-IMPORTANT RULES
+TRUTH TABLE RULES
 =========================================================
-
-For a truth table:
 
 - Every readable row must be included.
 - Use integer 0 and 1.
-- The row index starts at 0.
-- Minterms are row indexes where output = 1.
-- Maxterms are row indexes where output = 0.
+- Row numbering starts at 0.
+- Minterms are rows where output = 1.
+- Maxterms are rows where output = 0.
 
 Example:
 
@@ -509,31 +779,42 @@ A B Y
 1 0 1
 1 1 0
 
-Then:
-
-minterms:
+Minterms:
 
 [0,2]
 
-maxterms:
+Maxterms:
 
 [1,3]
 
+=========================================================
+LOGIC DIAGRAM RULES
+=========================================================
+
 For a logic diagram:
 
-Set:
+"type":
 
-"type": "logic_diagram"
+"logic_diagram"
 
 Example gate:
 
 {
+    "id": "G1",
     "type": "AND",
     "inputs": ["A","B"],
     "output": "N1"
 }
 
-If there are intermediate signals:
+Example connection:
+
+{
+    "from": "G1.output",
+    "to": "G2.input1",
+    "signal": "N1"
+}
+
+If an intermediate signal exists:
 
 {
     "name": "N1",
@@ -548,19 +829,13 @@ For every output:
     "simplified": "A.B+C"
 }
 
-If the circuit is small enough to enumerate, also create
-a truth table for the FIRST output.
+If the circuit is small enough to enumerate,
+also create a truth table for the FIRST output.
 
-Do not guess unreadable parts.
+If something is genuinely unreadable,
+put it in "notes" instead of guessing.
 
-If something cannot be determined, mention it in:
-
-"notes"
-
-=========================================================
 `;
-
-
 
 /* =========================================================
    IMAGE ANALYSIS API
@@ -568,15 +843,12 @@ If something cannot be determined, mention it in:
 
 app.post(
     "/api/analyze-truth-table",
+
     upload.single("image"),
 
     async (req, res) => {
 
         try {
-
-            /* ---------------------------------------------
-               Check image
-            --------------------------------------------- */
 
             if (!req.file) {
 
@@ -586,13 +858,20 @@ app.post(
 
                     error:
                         "No image was uploaded."
+
                 });
             }
 
             console.log("");
-            console.log("==============================");
-            console.log("IMAGE ANALYSIS STARTED");
-            console.log("==============================");
+            console.log(
+                "=============================="
+            );
+            console.log(
+                "IMAGE ANALYSIS STARTED"
+            );
+            console.log(
+                "=============================="
+            );
 
             console.log(
                 "File:",
@@ -610,35 +889,26 @@ app.post(
                 "bytes"
             );
 
-            /* ---------------------------------------------
-               Convert image to Base64
-            --------------------------------------------- */
-
             const imageBase64 =
                 req.file.buffer.toString(
                     "base64"
                 );
 
-            /* ---------------------------------------------
-               Send image + instructions to Gemini
-            --------------------------------------------- */
-
             const response =
                 await askGemini(
 
                     [
-
                         {
                             text:
                                 IMAGE_ANALYSIS_PROMPT
                         },
 
                         {
-
                             inlineData: {
 
                                 mimeType:
-                                    req.file.mimetype,
+                                    req.file
+                                        .mimetype,
 
                                 data:
                                     imageBase64
@@ -648,45 +918,32 @@ app.post(
                     ],
 
                     {
-
                         responseMimeType:
                             "application/json"
                     }
+
                 );
 
             console.log(
                 "Gemini response received."
             );
 
-            /* ---------------------------------------------
-               Parse response
-            --------------------------------------------- */
-
-            const rawText =
-                response.text || "";
-
             const parsed =
                 parseGeminiJSON(
-                    rawText
+                    response.text || ""
                 );
-
-            /* ---------------------------------------------
-               Validate
-            --------------------------------------------- */
 
             const analysis =
                 validateAnalysis(
                     parsed
                 );
 
-            /* ---------------------------------------------
-               Calculate minterms/maxterms ourselves
-               so they are NEVER dependent on Gemini.
-            --------------------------------------------- */
+            /*
+               Calculate minterms and maxterms ourselves.
+            */
 
             if (
-                analysis.rows &&
-                analysis.rows.length > 0
+                analysis.rows.length
             ) {
 
                 analysis.minterms =
@@ -712,29 +969,18 @@ app.post(
                         );
             }
 
-            /* ---------------------------------------------
-               Log result
-            --------------------------------------------- */
-
-            console.log("");
             console.log(
-                "ANALYSIS TYPE:",
+                "IMAGE ANALYSIS SUCCESS"
+            );
+
+            console.log(
+                "TYPE:",
                 analysis.type
             );
 
             console.log(
                 "VARIABLES:",
                 analysis.variables
-            );
-
-            console.log(
-                "OUTPUTS:",
-                analysis.outputs
-            );
-
-            console.log(
-                "ROWS:",
-                analysis.rows.length
             );
 
             console.log(
@@ -747,26 +993,13 @@ app.post(
                 analysis.maxterms
             );
 
-            console.log(
-                "GATES:",
-                analysis.gates
-            );
-
-            console.log("");
-            console.log(
-                "IMAGE ANALYSIS SUCCESS"
-            );
-            console.log("");
-
-            /* ---------------------------------------------
-               Send structured result to website
-            --------------------------------------------- */
-
             return res.json({
 
                 ok: true,
 
-                analysis: analysis
+                analysis:
+                    analysis
+
             });
 
         } catch (error) {
@@ -782,34 +1015,20 @@ app.post(
                 "=============================="
             );
 
-            console.error(
-                error
-            );
-
-            let message =
-                error?.message ||
-                "Image analysis failed.";
-
-            /* ---------------------------------------------
-               Friendly API-key error
-            --------------------------------------------- */
-
-            if (
-                /api key/i.test(message) ||
-                /authentication/i.test(message) ||
-                /unauthenticated/i.test(message) ||
-                /permission/i.test(message)
-            ) {
-
-                message =
-                    "Gemini API key is missing or invalid. Check GEMINI_API_KEY in your .env file.";
-            }
+            console.error(error);
 
             return res.status(500).json({
 
                 ok: false,
 
-                error: message
+                error:
+                    friendlyGeminiError(
+                        error
+                    ),
+
+                model:
+                    GEMINI_MODEL
+
             });
         }
     }
@@ -823,7 +1042,8 @@ app.use(
     (error, req, res, next) => {
 
         if (
-            error instanceof multer.MulterError
+            error instanceof
+            multer.MulterError
         ) {
 
             if (
@@ -831,33 +1051,42 @@ app.use(
                 "LIMIT_FILE_SIZE"
             ) {
 
-                return res.status(400).json({
+                return res.status(
+                    400
+                ).json({
 
                     ok: false,
 
                     error:
-                        "Image is too large. Maximum size is 12 MB."
+                        "Image is too large. Maximum size is 4 MB."
+
                 });
             }
 
-            return res.status(400).json({
+            return res.status(
+                400
+            ).json({
 
                 ok: false,
 
                 error:
                     "Image upload error: " +
                     error.message
+
             });
         }
 
         if (error) {
 
-            return res.status(400).json({
+            return res.status(
+                400
+            ).json({
 
                 ok: false,
 
                 error:
                     error.message
+
             });
         }
 
@@ -866,31 +1095,70 @@ app.use(
 );
 
 /* =========================================================
-   START SERVER
+   LOCAL + VERCEL
    ========================================================= */
 
-// ==================================================
-// START SERVER
-// ==================================================
+if (
+    require.main === module
+) {
 
-if (require.main === module) {
     app.listen(
+
         PORT,
+
         "0.0.0.0",
+
         () => {
+
             console.log("");
-            console.log("================================");
-            console.log("DC'S PROJECT AI SERVER");
-            console.log("================================");
+
+            console.log(
+                "================================"
+            );
+
+            console.log(
+                "DC'S PROJECT AI SERVER"
+            );
+
+            console.log(
+                "================================"
+            );
+
             console.log(
                 `Server running at http://localhost:${PORT}`
             );
-            console.log("Image analyzer: READY");
-            console.log("AI chat: READY");
-            console.log("================================");
+
+            console.log(
+                `Gemini model: ${GEMINI_MODEL}`
+            );
+
+            console.log(
+                `Gemini key: ${
+                    API_KEY
+                        ? "CONFIGURED"
+                        : "MISSING"
+                }`
+            );
+
+            console.log(
+                "Image analyzer: READY"
+            );
+
+            console.log(
+                "AI chat: READY"
+            );
+
+            console.log(
+                "================================"
+            );
+
             console.log("");
         }
     );
 }
+
+/* =========================================================
+   VERCEL EXPORT
+   ========================================================= */
 
 module.exports = app;
