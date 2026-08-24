@@ -1881,8 +1881,93 @@ applySettings();const saved=localStorage.getItem('dcp_last_expr');const savedDef
   const toggle=()=>{panel.classList.toggle('open');if(panel.classList.contains('open')){updateContext();input.focus()}};
   fab.addEventListener('click',toggle);close.addEventListener('click',()=>panel.classList.remove('open'));
   document.addEventListener('click',e=>{const b=e.target.closest('[data-ai-prompt]');if(b){input.value=b.dataset.aiPrompt;send.click()}});
-  const ask=async()=>{const text=input.value.trim();if(!text||send.disabled)return;input.value='';addMsg(text,'user');const c=getContext();const typing=addMsg('','ai');typing.innerHTML='<span class="dc-ai-typing"><span></span><span></span><span></span></span>';send.disabled=true;
-    try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,history,context:c})});const data=await res.json();if(!res.ok)throw new Error(data.error||'AI request failed');typing.remove();addMsg(data.reply||'I could not generate a response.','ai');history.push({role:'user',content:text},{role:'assistant',content:data.reply||''});if(history.length>20)history=history.slice(-20);updateContext()}catch(err){typing.remove();addMsg('Sorry, I could not reach DC AI. Make sure the Gemini backend is running and GEMINI_API_KEY is configured.','ai')}finally{send.disabled=false;input.focus()}};
+  const ask=async()=>{
+    const text=input.value.trim();
+    if(!text||send.disabled)return;
+
+    input.value='';
+    addMsg(text,'user');
+
+    const c=getContext();
+    const typing=addMsg('','ai');
+    typing.innerHTML='<span class="dc-ai-typing"><span></span><span></span><span></span></span>';
+    send.disabled=true;
+
+    try{
+      console.log('[DCAI] POST /api/chat');
+
+      const res=await fetch('/api/chat',{
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Accept':'application/json'
+        },
+        body:JSON.stringify({
+          message:text,
+          history,
+          context:c
+        })
+      });
+
+      console.log('[DCAI] status:',res.status);
+
+      const type=(res.headers.get('content-type')||'').toLowerCase();
+      let data;
+
+      if(type.includes('application/json')){
+        data=await res.json();
+      }else{
+        const raw=await res.text();
+        console.error('[DCAI] non-JSON response:',raw);
+        throw new Error(
+          `Server returned HTTP ${res.status} instead of JSON.`
+        );
+      }
+
+      console.log('[DCAI] data:',data);
+
+      if(!res.ok){
+        throw new Error(
+          data.error||
+          data.message||
+          `AI request failed with HTTP ${res.status}`
+        );
+      }
+
+      const reply=
+        data.reply||
+        data.text||
+        'I could not generate a response.';
+
+      typing.remove();
+      addMsg(reply,'ai');
+
+      history.push(
+        {role:'user',content:text},
+        {role:'assistant',content:reply}
+      );
+
+      if(history.length>20){
+        history=history.slice(-20);
+      }
+
+      updateContext();
+
+    }catch(err){
+      console.error('[DCAI] request failed:',err);
+
+      typing.remove();
+
+      addMsg(
+        'AI connection error: '+
+        (err&&err.message?err.message:'Unknown error'),
+        'ai'
+      );
+    }finally{
+      send.disabled=false;
+      input.focus();
+    }
+  };
   send.addEventListener('click',ask);input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});
   const observer=new MutationObserver(updateContext);const badge=$('#verification-badge');if(badge)observer.observe(badge,{childList:true,subtree:true,characterData:true});
   const originalPerform=window.performAnalysis;
@@ -2341,4 +2426,3 @@ applySettings();const saved=localStorage.getItem('dcp_last_expr');const savedDef
 
 </body>
 </html>
-
