@@ -229,7 +229,7 @@ body.compact .workspace{padding:18px} body.high-contrast{background:#02050a} bod
 }
 .single-svg-wire{
   fill:none;
-  stroke:#6b9cff;
+  stroke:var(--wire-color, #6b9cff);
   stroke-width:3;
   stroke-linecap:round;
   stroke-linejoin:round;
@@ -1167,20 +1167,89 @@ function renderNetwork(host,net,vars,label){
   }
 
   const wires=[];
+  function signalColor(signal){
 
-  function addCleanWire(srcX,srcY,dstX,dstY,label){
+  const colors = {
+    A: '#5aa9ff',
+    B: '#35d0a4',
+    C: '#ffb84d',
+    D: '#ff6b8a',
+    E: '#b58cff',
+    F: '#61d8ff',
+    G: '#ff7f50',
+    H: '#7ee787',
+    I: '#f778ba',
+    J: '#d2a8ff'
+  };
+
+  // Primary inputs
+  if(colors[signal]){
+    return colors[signal];
+  }
+
+  // Gate-generated signals
+  const gateColors = [
+    '#ff6b8a',
+    '#b58cff',
+    '#61d8ff',
+    '#7ee787',
+    '#ffb84d',
+    '#f778ba'
+  ];
+
+  const match =
+    String(signal).match(/G(\d+)/);
+
+  if(match){
+
+    const index =
+      (Number(match[1]) - 1) %
+      gateColors.length;
+
+    return gateColors[index];
+  }
+
+  return '#6b9cff';
+}
+
+  function addCleanWire(
+  srcX,
+  srcY,
+  dstX,
+  dstY,
+  label,
+  signal
+){
     const dx=dstX-srcX;
     const dy=dstY-srcY;
 
+    const color =
+  signalColor(signal || label);
+
     if(Math.abs(dy)<2){
-      wires.push(`<path class="single-svg-wire" d="M ${srcX} ${srcY} H ${dstX}"/>`);
+      wires.push(`
+  <path
+    class="single-svg-wire"
+    style="--wire-color:${color}"
+    d="M ${srcX} ${srcY} H ${dstX}"
+  />
+`);
     }else{
       // One clean elbow. Since all gates are inside one SVG, the wire
       // terminates exactly on the same coordinate as the pin.
       const midX=Math.round(srcX + dx*0.52);
-      wires.push(
-        `<path class="single-svg-wire" d="M ${srcX} ${srcY} H ${midX} V ${dstY} H ${dstX}"/>`
-      );
+      wires.push(`
+  <path
+    class="single-svg-wire"
+    style="--wire-color:${color}"
+    d="
+      M ${srcX} ${srcY}
+      H ${midX}
+      V ${dstY}
+      H ${dstX}
+    "
+  />
+`);
     }
 
     if(label){
@@ -1199,13 +1268,27 @@ function renderNetwork(host,net,vars,label){
 
       if(gateById.has(ref)){
         const src=positions.get(ref);
-        addCleanWire(src.outX,src.outY,p.inX,dstY,'');
+        addCleanWire(
+  src.outX,
+  src.outY,
+  p.inX,
+  dstY,
+  '',
+  ref
+);
       }else{
         const src=positions.get(ref) || {
           outX:left-15,
           outY:inputY[ref] || canvasH/2
         };
-        addCleanWire(src.outX,src.outY,p.inX,dstY,ref);
+        addCleanWire(
+  src.outX,
+  src.outY,
+  p.inX,
+  dstY,
+  ref,
+  ref
+);
       }
     });
   });
@@ -1214,7 +1297,14 @@ function renderNetwork(host,net,vars,label){
   const lastGate=gateById.get(net.output);
   if(lastGate){
     const p=positions.get(net.output);
-    addCleanWire(p.outX,p.outY,outX,outY,'');
+    addCleanWire(
+  p.outX,
+  p.outY,
+  outX,
+  outY,
+  '',
+  net.output
+);
   }else if(positions.has(net.output)){
     const p=positions.get(net.output);
     addCleanWire(p.outX,p.outY,outX,outY,net.output);
@@ -2718,4 +2808,3 @@ applySettings();const saved=localStorage.getItem('dcp_last_expr');const savedDef
 
 </body>
 </html>
-
